@@ -1,5 +1,7 @@
 # DSH Voice Input Plugin
 
+[中文说明](README.zh-CN.md)
+
 A client-side Cordis plugin for DeepSeek Harness (DSH) that adds continuous voice dictation to the DSH Web UI composer.
 
 ## Features
