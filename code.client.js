@@ -35,7 +35,10 @@ return {
         const [phase, setPhase] = React.useState(0)
         const [soundActive, setSoundActive] = React.useState(false)
         const [lang, setLang] = React.useState('zh-CN')
+        const [autoPunctuation, setAutoPunctuation] = React.useState(true)
         const recRef = React.useRef(null)
+        const langRef = React.useRef('zh-CN')
+        const autoPunctuationRef = React.useRef(true)
         const draftRef = React.useRef((input && input.draft) || '')
         const activeRef = React.useRef(false)
         const restartTimerRef = React.useRef(null)
@@ -51,8 +54,13 @@ return {
         }, [input && input.draft])
 
         React.useEffect(() => {
+          langRef.current = lang
           if (recRef.current) recRef.current.lang = lang
         }, [lang])
+
+        React.useEffect(() => {
+          autoPunctuationRef.current = autoPunctuation
+        }, [autoPunctuation])
 
         function getGlobal() {
           return typeof window !== 'undefined'
@@ -76,6 +84,20 @@ return {
             : spoken
           inputActions.setDraft(next)
           draftRef.current = next
+        }
+
+        function hasTerminalPunctuation(text) {
+          return /[。！？!?.,，、；;：:…)]$/.test((text || '').trim())
+        }
+
+        function formatFinalTranscript(text) {
+          if (!autoPunctuationRef.current) return text || ''
+          const raw = text || ''
+          const leading = (raw.match(/^\s*/) || [''])[0]
+          const core = raw.trim()
+          if (!core || hasTerminalPunctuation(core)) return raw
+          const mark = langRef.current === 'zh-CN' ? '。' : '.'
+          return leading + core + mark
         }
 
         function stopMeter() {
@@ -193,7 +215,7 @@ return {
                 ? result[0].transcript
                 : ''
               if (result && result.isFinal) {
-                finalText += text
+                finalText += formatFinalTranscript(text)
               } else {
                 interimText += text
               }
@@ -286,6 +308,7 @@ return {
 
         function switchLanguage() {
           const next = lang === 'zh-CN' ? 'en-US' : 'zh-CN'
+          langRef.current = next
           setLang(next)
           if (recRef.current) recRef.current.lang = next
           if (activeRef.current && recRef.current) {
@@ -296,6 +319,10 @@ return {
               console.log('[voice-input] language restart failed:', error)
             }
           }
+        }
+
+        function togglePunctuation() {
+          setAutoPunctuation((current) => !current)
         }
 
         // 插件卸载时中止进行中的识别
@@ -343,6 +370,7 @@ return {
         )
         const langLabel = lang === 'zh-CN' ? '中' : 'EN'
         const nextLangLabel = lang === 'zh-CN' ? 'English' : '中文'
+        const punctuationLabel = lang === 'zh-CN' ? '。' : '.'
 
         return React.createElement(
           'span',
@@ -445,6 +473,32 @@ return {
               },
             },
             langLabel,
+          ),
+          React.createElement(
+            'button',
+            {
+              type: 'button',
+              title: autoPunctuation ? '关闭自动标点' : '开启自动标点',
+              onClick: togglePunctuation,
+              'aria-label': autoPunctuation ? '关闭自动标点' : '开启自动标点',
+              style: {
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 28,
+                height: 28,
+                padding: 0,
+                border: '1px solid transparent',
+                borderRadius: 6,
+                background: autoPunctuation ? 'rgba(82, 88, 99, 0.1)' : 'transparent',
+                color: autoPunctuation ? '#4b5563' : '#858b93',
+                cursor: 'pointer',
+                fontSize: 15,
+                fontWeight: 700,
+                lineHeight: 1,
+              },
+            },
+            punctuationLabel,
           ),
         )
       },

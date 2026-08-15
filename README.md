@@ -8,6 +8,7 @@ A client-side Cordis plugin for DeepSeek Harness (DSH) that adds continuous voic
 
 - Continuous voice dictation for the DSH composer.
 - Manual Chinese / English recognition switch (`zh-CN` / `en-US`).
+- Lightweight automatic punctuation for finalized recognition segments.
 - Live interim transcript updates in the draft input.
 - Auto-restart after browser-imposed silence endings.
 - Five-bar animated voice activity indicator.
@@ -58,6 +59,7 @@ The client plugin is delivered to open DSH Web UI pages. Refresh the Web UI if t
 - Click the microphone button to start listening.
 - Click it again to stop.
 - Use the `中` / `EN` button to switch recognition language.
+- Use the `。` / `.` button to turn automatic punctuation on or off.
 - While listening, the button expands and shows five animated red voice bars.
 - Text is written into the current composer draft; send it normally when ready.
 
@@ -65,6 +67,7 @@ The client plugin is delivered to open DSH Web UI pages. Refresh the Web UI if t
 
 - Web Speech API behavior depends on the browser and network.
 - The browser decides silence timeout and segment length. The plugin restarts after an `end` event, but it cannot make one browser recognition session infinite.
+- Automatic punctuation is intentionally conservative: it appends only sentence-ending punctuation to finalized segments and does not infer commas or semantic punctuation.
 - Chrome may route recognition through Google services; Edge may route through Microsoft/Azure services.
 - The voice meter uses `getUserMedia`; if the browser denies that path, recognition may still work while the meter falls back to SpeechRecognition sound/speech events.
 
