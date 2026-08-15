@@ -14,7 +14,7 @@
 - 使用五段式动态音量条显示当前收音状态。
 - 使用接近 DSH 界面风格的内联 SVG 麦克风和停止图标，不使用 emoji。
 - 可选接入 SiliconFlow 高准确率云端语音转写。
-- 可选接入火山引擎大模型录音文件极速版，启用标点、ITN 和语义顺滑。
+- 火山引擎控制台中的三种 ASR 服务都可选择：流式语音识别、录音文件识别 1.0、录音文件识别 2.0。
 - 火山模式通过 DSH Host 私有 RPC 和本地代理调用，绕过浏览器 CORS 限制，凭证不会出现在命令行或源码中。
 
 ## 环境要求
@@ -68,7 +68,10 @@ SiliconFlow 模式还需要浏览器支持 `MediaRecorder`，并会调用其
 - 点击 `中` / `EN` 按钮手动切换识别语言。
 - 点击设置按钮，可在“浏览器实时”、“硅基流动”和“火山 ASR”之间切换。
 - 云端模式需要填写 SiliconFlow API Key，可选择 `FunAudioLLM/SenseVoiceSmall` 或 `TeleAI/TeleSpeechASR`。
-- 火山模式固定使用 `volc.bigasr.auc_turbo` 录音文件极速版，可填写新版控制台 API Key，或旧版 App ID + Access Token。
+- 火山模式可填写新版控制台 API Key，或旧版 App ID + Access Token，并提供以下服务选项：
+  - `Doubao-流式语音识别`：`volc.seedasr.sauc.duration`，界面标价 4.5 元/小时。
+  - `Doubao-录音文件识别`：`volc.bigasr.auc`，界面标价 2.3 元/小时。
+  - `Doubao-录音文件识别 2.0`：`volc.seedasr.auc`，界面标价 0.8 元/小时。
 - 收音时按钮会展开，并显示五段红色动态音量条。
 - 识别出的文字会写入当前输入框草稿，确认后正常发送即可。
 
@@ -82,7 +85,8 @@ SiliconFlow 模式还需要浏览器支持 `MediaRecorder`，并会调用其
 - 浏览器会自行决定静音超时和单段识别长度。插件会在 `end` 事件后尝试重启，但不能把单次浏览器识别会话变成真正无限。
 - 浏览器实时模式保留识别服务返回的原始文本，不再添加启发式标点。需要语义标点和更高准确率时请使用云端模式。
 - 云端模式会在停止录音后返回整段文字，不提供浏览器实时模式那样的临时文本预览。
-- 火山模式当前实现的是录音文件极速版批量识别，不是流式 WebSocket；插件内建议单段录音不超过约 8 分钟。
+- 流式选项调用官方 WebSocket 协议，但当前 DSH JSON 桥会在停止录音后提交已捕获的整段音频，暂时不会在说话过程中显示远端临时结果。
+- 录音文件 1.0 和 2.0 使用官方 submit/query 轮询流程；插件内建议单段录音不超过约 8 分钟。
 - 同一 DSH 页面来源中的其他脚本理论上可以访问浏览器端 Key，因此请使用独立且有限额的 Key。
 - Chrome 可能会把语音识别请求交给 Google 服务；Edge 可能会交给 Microsoft / Azure 服务。
 - 音量条依赖 `getUserMedia`。如果浏览器拒绝麦克风音量采集，语音识别仍可能工作，但音量条会退回到 SpeechRecognition 的 sound/speech 事件反馈。
@@ -93,4 +97,5 @@ MIT
 
 ## 服务文档
 
-- [火山引擎大模型录音文件极速版识别 API](https://www.volcengine.com/docs/6561/1631584?lang=zh)
+- [火山引擎大模型流式语音识别 API](https://www.volcengine.com/docs/6561/1354869?lang=zh)
+- [火山引擎 ASR 产品页](https://www.volcengine.com/product/asr)

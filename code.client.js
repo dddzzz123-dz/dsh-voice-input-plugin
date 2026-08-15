@@ -68,6 +68,14 @@ return {
             return 'api-key'
           }
         })
+        const [volcService, setVolcService] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.localStorage && g.localStorage.getItem('dsh-voice-volc-service')) || 'recording-v2'
+          } catch (error) {
+            return 'recording-v2'
+          }
+        })
         const [volcApiKey, setVolcApiKey] = React.useState(() => {
           const g = getGlobal()
           try {
@@ -402,9 +410,11 @@ return {
           const result = await host.call('transcribe-volcengine', {
             audioBase64,
             authMode: volcAuthMode,
+            service: volcService,
             apiKey: volcApiKey.trim(),
             appId: volcAppId.trim(),
             accessToken: volcAccessToken.trim(),
+            language: langRef.current,
           })
           if (!result || result.ok !== true) {
             const detail = result && result.message ? `：${result.message}` : ''
@@ -706,6 +716,7 @@ return {
               g.localStorage.setItem('dsh-voice-engine', engine)
               g.localStorage.setItem('dsh-voice-cloud-model', cloudModel)
               g.localStorage.setItem('dsh-voice-volc-auth-mode', volcAuthMode)
+              g.localStorage.setItem('dsh-voice-volc-service', volcService)
             }
             if (g && g.sessionStorage) {
               if (cloudApiKey.trim()) {
@@ -745,6 +756,7 @@ return {
               setEngine(g.localStorage.getItem('dsh-voice-engine') || 'browser')
               setCloudModel(g.localStorage.getItem('dsh-voice-cloud-model') || 'FunAudioLLM/SenseVoiceSmall')
               setVolcAuthMode(g.localStorage.getItem('dsh-voice-volc-auth-mode') || 'api-key')
+              setVolcService(g.localStorage.getItem('dsh-voice-volc-service') || 'recording-v2')
             }
             if (g && g.sessionStorage) {
               setCloudApiKey(g.sessionStorage.getItem('dsh-voice-siliconflow-key') || '')
@@ -965,23 +977,46 @@ return {
                       { style: { display: 'block', marginBottom: 12, fontSize: 12, color: '#5f6670' } },
                       '识别服务',
                       React.createElement(
-                        'div',
+                        'select',
                         {
+                          value: volcService,
+                          onChange: (event) => setVolcService(event.target.value),
                           style: {
-                            display: 'flex',
-                            alignItems: 'center',
+                            display: 'block',
+                            width: '100%',
                             height: 36,
                             marginTop: 6,
                             padding: '0 10px',
                             border: '1px solid #d7dbe0',
                             borderRadius: 6,
-                            background: '#f9fafb',
+                            background: '#ffffff',
                             color: '#20242a',
                             fontSize: 13,
                           },
                         },
-                        '录音文件极速版（volc.bigasr.auc_turbo）',
+                        React.createElement('option', { value: 'streaming' }, 'Doubao-流式语音识别 · 4.5 元/小时'),
+                        React.createElement('option', { value: 'recording-v1' }, 'Doubao-录音文件识别 · 2.3 元/小时'),
+                        React.createElement('option', { value: 'recording-v2' }, 'Doubao-录音文件识别 2.0 · 0.8 元/小时'),
                       ),
+                    ),
+                    React.createElement(
+                      'div',
+                      {
+                        style: {
+                          margin: '-5px 0 12px',
+                          padding: '8px 10px',
+                          borderLeft: '2px solid #d1d5db',
+                          background: '#f9fafb',
+                          color: '#6b7280',
+                          fontSize: 11,
+                          lineHeight: 1.5,
+                        },
+                      },
+                      volcService === 'streaming'
+                        ? 'WebSocket 流式接口（volc.seedasr.sauc.duration）。当前 DSH 桥接在停止录音后提交整段音频。'
+                        : volcService === 'recording-v1'
+                          ? '录音文件模型 1.0（volc.bigasr.auc），提交任务后轮询结果。'
+                          : '录音文件模型 2.0（volc.seedasr.auc），提交任务后轮询结果。',
                     ),
                     React.createElement(
                       'div',
