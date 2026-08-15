@@ -8,7 +8,6 @@ A client-side Cordis plugin for DeepSeek Harness (DSH) that adds continuous voic
 
 - Continuous voice dictation for the DSH composer.
 - Manual Chinese / English recognition switch (`zh-CN` / `en-US`).
-- Lightweight automatic punctuation for finalized recognition segments.
 - Live interim transcript updates in the draft input.
 - User edits remain authoritative during live dictation; deleted or corrected text is not restored by a later final recognition event.
 - Auto-restart after browser-imposed silence endings.
@@ -64,7 +63,6 @@ The client plugin is delivered to open DSH Web UI pages. Refresh the Web UI if t
 - Click the microphone button to start listening.
 - Click it again to stop.
 - Use the `中` / `EN` button to switch recognition language.
-- Use the `。` / `.` button to turn automatic punctuation on or off.
 - Open the settings button to switch between `Browser realtime` and `Cloud high accuracy`.
 - Cloud mode requires a SiliconFlow API key and supports `FunAudioLLM/SenseVoiceSmall` and `TeleAI/TeleSpeechASR`.
 - While listening, the button expands and shows five animated red voice bars.
@@ -79,7 +77,7 @@ share that key with other users.
 
 - Web Speech API behavior depends on the browser and network.
 - The browser decides silence timeout and segment length. The plugin restarts after an `end` event, but it cannot make one browser recognition session infinite.
-- Automatic punctuation is intentionally conservative: it appends only sentence-ending punctuation to finalized segments and does not infer commas or semantic punctuation.
+- Browser mode preserves the recognition service's raw text and does not add heuristic punctuation. Use cloud mode when semantic punctuation and higher transcription accuracy matter.
 - Cloud mode returns text after recording stops; it does not provide the live interim preview available in browser mode.
 - A browser-side API key can be accessed by other scripts running on the same DSH origin. Use a limited, dedicated key.
 - Chrome may route recognition through Google services; Edge may route through Microsoft/Azure services.
