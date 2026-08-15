@@ -66,19 +66,6 @@ The client plugin is delivered to open DSH Web UI pages. Refresh the Web UI if t
 - Chrome may route recognition through Google services; Edge may route through Microsoft/Azure services.
 - The voice meter uses `getUserMedia`; if the browser denies that path, recognition may still work while the meter falls back to SpeechRecognition sound/speech events.
 
-## Repository Topics
-
-Recommended GitHub topics:
-
-```text
-dsh-plugin
-deepseek-harness
-cordis-plugin
-voice-input
-speech-recognition
-web-speech-api
-```
-
 ## License
 
 MIT
