@@ -1,0 +1,21 @@
+# Dependencies and caches
+node_modules/
+.npm/
+.cache/
+
+# Local DSH/Codex/private state
+.dsh/
+.codex/
+agent_protocol/
+sessions/
+storages/
+.credentials.yaml
+settings.yaml
+.anonymous-user-id
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
