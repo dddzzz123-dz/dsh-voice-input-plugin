@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md)
 
-A client-side Cordis plugin for DeepSeek Harness (DSH) that adds continuous voice dictation to the DSH Web UI composer.
+A Cordis plugin for DeepSeek Harness (DSH) that adds continuous voice dictation and optional cloud ASR to the DSH Web UI composer.
 
 ## Features
 
@@ -14,7 +14,8 @@ A client-side Cordis plugin for DeepSeek Harness (DSH) that adds continuous voic
 - Five-bar animated voice activity indicator.
 - DSH-style inline SVG microphone and stop icons, no emoji UI.
 - Optional high-accuracy cloud transcription through SiliconFlow.
-- Client-only implementation with no plugin backend.
+- Optional Volcengine BigModel ASR flash transcription with punctuation, ITN, and semantic smoothing.
+- A package-private DSH Host proxy for Volcengine, avoiding browser CORS limitations and keeping credentials out of command lines and source files.
 
 ## Requirements
 
@@ -27,8 +28,10 @@ A client-side Cordis plugin for DeepSeek Harness (DSH) that adds continuous voic
 
 Firefox and Safari do not currently support the Web Speech recognition API used here.
 
-The optional cloud mode additionally uses `MediaRecorder` and the SiliconFlow
-`/v1/audio/transcriptions` endpoint.
+SiliconFlow mode additionally uses `MediaRecorder` and its
+`/v1/audio/transcriptions` endpoint. Volcengine mode uses `AudioContext` to
+encode 16 kHz mono PCM WAV, plus the DSH Host `shell` service and local Node.js
+to call the official flash recognition endpoint.
 
 ## Install In DSH
 
@@ -40,13 +43,14 @@ Open a DSH creator-mode session, then:
    cordis_inspect: what = client, name = conversation.input.right
    ```
 
-2. Define the plugin with `code.client` set to the full contents of `code.client.js`:
+2. Define the plugin with both source files:
 
    ```text
    cordis_define:
      name: voice-input
      purpose: Add continuous voice dictation to the DSH composer.
      code:
+       host: <full code.host.js>
        client: <full code.client.js>
    ```
 
@@ -63,22 +67,25 @@ The client plugin is delivered to open DSH Web UI pages. Refresh the Web UI if t
 - Click the microphone button to start listening.
 - Click it again to stop.
 - Use the `中` / `EN` button to switch recognition language.
-- Open the settings button to switch between `Browser realtime` and `Cloud high accuracy`.
+- Open settings to switch among `Browser realtime`, `SiliconFlow`, and `Volcengine ASR`.
 - Cloud mode requires a SiliconFlow API key and supports `FunAudioLLM/SenseVoiceSmall` and `TeleAI/TeleSpeechASR`.
+- Volcengine mode uses the `volc.bigasr.auc_turbo` flash recognition service. It accepts either a new-console API key or legacy App ID plus Access Token.
 - While listening, the button expands and shows five animated red voice bars.
 - Text is written into the current composer draft; send it normally when ready.
 
-The API key is stored only in the current tab's `sessionStorage`. It is never
-written into this repository or the plugin source. Because this remains a
-browser-side integration, use a separate key with a spending limit and do not
-share that key with other users.
+Credentials are stored only in the current tab's `sessionStorage`. They are
+never written into this repository or the plugin source. Volcengine credentials
+cross the package-private local Host RPC only for one request and are supplied
+to the proxy child process through its temporary environment. Use dedicated
+credentials with spending limits and do not share them.
 
 ## Known Limits
 
 - Web Speech API behavior depends on the browser and network.
 - The browser decides silence timeout and segment length. The plugin restarts after an `end` event, but it cannot make one browser recognition session infinite.
 - Browser mode preserves the recognition service's raw text and does not add heuristic punctuation. Use cloud mode when semantic punctuation and higher transcription accuracy matter.
-- Cloud mode returns text after recording stops; it does not provide the live interim preview available in browser mode.
+- Cloud modes return text after recording stops; they do not provide the live interim preview available in browser mode.
+- Volcengine mode currently implements batch flash recognition, not its streaming WebSocket protocol. Keep one recording to about eight minutes or less in this plugin.
 - A browser-side API key can be accessed by other scripts running on the same DSH origin. Use a limited, dedicated key.
 - Chrome may route recognition through Google services; Edge may route through Microsoft/Azure services.
 - The voice meter uses `getUserMedia`; if the browser denies that path, recognition may still work while the meter falls back to SpeechRecognition sound/speech events.
@@ -86,3 +93,7 @@ share that key with other users.
 ## License
 
 MIT
+
+## Provider Documentation
+
+- [Volcengine BigModel flash recording recognition API](https://www.volcengine.com/docs/6561/1631584?lang=zh)

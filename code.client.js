@@ -3,7 +3,7 @@
  *
  * 平台：Client（浏览器端）
  * 挂载点：conversation.input.right（composer 工具行右端，发送按钮左侧）
- * 依赖：浏览器 Web Speech API，或可选的 SiliconFlow 语音转写 API
+ * 依赖：浏览器 Web Speech API，或可选的 SiliconFlow / Volcengine ASR
  *
  * 部署方式：通过 Cordis 动态插件工具 cordis_define / cordis_run 运行，
  * 详见同目录 README.md。本文件即 cordis_define 的 code.client 载荷。
@@ -60,6 +60,38 @@ return {
             return ''
           }
         })
+        const [volcAuthMode, setVolcAuthMode] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.localStorage && g.localStorage.getItem('dsh-voice-volc-auth-mode')) || 'api-key'
+          } catch (error) {
+            return 'api-key'
+          }
+        })
+        const [volcApiKey, setVolcApiKey] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.sessionStorage && g.sessionStorage.getItem('dsh-voice-volc-api-key')) || ''
+          } catch (error) {
+            return ''
+          }
+        })
+        const [volcAppId, setVolcAppId] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.sessionStorage && g.sessionStorage.getItem('dsh-voice-volc-app-id')) || ''
+          } catch (error) {
+            return ''
+          }
+        })
+        const [volcAccessToken, setVolcAccessToken] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.sessionStorage && g.sessionStorage.getItem('dsh-voice-volc-access-token')) || ''
+          } catch (error) {
+            return ''
+          }
+        })
         const [cloudBusy, setCloudBusy] = React.useState(false)
         const [cloudError, setCloudError] = React.useState('')
         const recRef = React.useRef(null)
@@ -78,6 +110,7 @@ return {
         const mediaRecorderRef = React.useRef(null)
         const cloudChunksRef = React.useRef([])
         const cloudStreamRef = React.useRef(null)
+        const wavRecorderRef = React.useRef(null)
 
         React.useEffect(() => {
           const nextDraft = (input && input.draft) || ''
@@ -243,6 +276,97 @@ return {
           draftRef.current = next
         }
 
+        function encodeWavBase64(chunks, sourceRate) {
+          let totalLength = 0
+          chunks.forEach((chunk) => { totalLength += chunk.length })
+          const merged = new Float32Array(totalLength)
+          let offset = 0
+          chunks.forEach((chunk) => {
+            merged.set(chunk, offset)
+            offset += chunk.length
+          })
+
+          const targetRate = 16000
+          const ratio = sourceRate / targetRate
+          const outputLength = Math.max(1, Math.round(merged.length / ratio))
+          const samples = new Float32Array(outputLength)
+          for (let i = 0; i < outputLength; i++) {
+            const position = i * ratio
+            const left = Math.floor(position)
+            const right = Math.min(left + 1, merged.length - 1)
+            const mix = position - left
+            samples[i] = (merged[left] || 0) * (1 - mix) + (merged[right] || 0) * mix
+          }
+
+          const buffer = new ArrayBuffer(44 + samples.length * 2)
+          const view = new DataView(buffer)
+          function writeAscii(at, text) {
+            for (let i = 0; i < text.length; i++) view.setUint8(at + i, text.charCodeAt(i))
+          }
+          writeAscii(0, 'RIFF')
+          view.setUint32(4, 36 + samples.length * 2, true)
+          writeAscii(8, 'WAVE')
+          writeAscii(12, 'fmt ')
+          view.setUint32(16, 16, true)
+          view.setUint16(20, 1, true)
+          view.setUint16(22, 1, true)
+          view.setUint32(24, targetRate, true)
+          view.setUint32(28, targetRate * 2, true)
+          view.setUint16(32, 2, true)
+          view.setUint16(34, 16, true)
+          writeAscii(36, 'data')
+          view.setUint32(40, samples.length * 2, true)
+          for (let i = 0; i < samples.length; i++) {
+            const sample = Math.max(-1, Math.min(1, samples[i]))
+            view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+          }
+
+          const bytes = new Uint8Array(buffer)
+          let binary = ''
+          const blockSize = 0x8000
+          for (let i = 0; i < bytes.length; i += blockSize) {
+            binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + blockSize, bytes.length)))
+          }
+          return btoa(binary)
+        }
+
+        function startWavRecorder(stream) {
+          const g = getGlobal()
+          const AudioCtor = g && (g.AudioContext || g.webkitAudioContext)
+          if (!AudioCtor) throw new Error('当前浏览器不支持 WAV 录音')
+          const audioContext = new AudioCtor()
+          const source = audioContext.createMediaStreamSource(stream)
+          const processor = audioContext.createScriptProcessor(4096, 1, 1)
+          const silentGain = audioContext.createGain()
+          silentGain.gain.value = 0
+          const chunks = []
+          processor.onaudioprocess = (event) => {
+            if (!activeRef.current) return
+            const channel = event.inputBuffer.getChannelData(0)
+            chunks.push(new Float32Array(channel))
+          }
+          source.connect(processor)
+          processor.connect(silentGain)
+          silentGain.connect(audioContext.destination)
+          if (audioContext.state === 'suspended') audioContext.resume().catch(() => undefined)
+          wavRecorderRef.current = { audioContext, source, processor, silentGain, chunks }
+        }
+
+        function finishWavRecorder(encode) {
+          const recorder = wavRecorderRef.current
+          wavRecorderRef.current = null
+          if (!recorder) return ''
+          recorder.processor.onaudioprocess = null
+          recorder.source.disconnect()
+          recorder.processor.disconnect()
+          recorder.silentGain.disconnect()
+          const result = encode
+            ? encodeWavBase64(recorder.chunks, recorder.audioContext.sampleRate)
+            : ''
+          recorder.audioContext.close().catch(() => undefined)
+          return result
+        }
+
         async function transcribeCloudAudio(blob) {
           if (!blob || blob.size === 0) throw new Error('没有录到可转写的音频')
           if (!cloudApiKey.trim()) throw new Error('请先在语音设置中填写 SiliconFlow API Key')
@@ -274,7 +398,87 @@ return {
           appendCloudTranscript(result.text)
         }
 
+        async function transcribeVolcengineAudio(audioBase64) {
+          const result = await host.call('transcribe-volcengine', {
+            audioBase64,
+            authMode: volcAuthMode,
+            apiKey: volcApiKey.trim(),
+            appId: volcAppId.trim(),
+            accessToken: volcAccessToken.trim(),
+          })
+          if (!result || result.ok !== true) {
+            const detail = result && result.message ? `：${result.message}` : ''
+            const status = result && result.statusCode ? `（${result.statusCode}）` : ''
+            throw new Error(`火山引擎转写失败${status}${detail}`)
+          }
+          if (typeof result.text !== 'string' || !result.text.trim()) {
+            throw new Error('火山引擎没有返回识别文本')
+          }
+          appendCloudTranscript(result.text)
+        }
+
+        async function startVolcengineRecording() {
+          const g = getGlobal()
+          const mediaDevices = g && g.navigator && g.navigator.mediaDevices
+          if (!mediaDevices) {
+            setUnsupported(true)
+            return
+          }
+          const missingNewKey = volcAuthMode === 'api-key' && !volcApiKey.trim()
+          const missingLegacyKey = volcAuthMode === 'legacy'
+            && (!volcAppId.trim() || !volcAccessToken.trim())
+          if (missingNewKey || missingLegacyKey) {
+            setCloudError(volcAuthMode === 'api-key'
+              ? '请先填写火山引擎 API Key'
+              : '请先填写火山引擎 App ID 和 Access Token')
+            setSettingsOpen(true)
+            return
+          }
+
+          try {
+            setCloudError('')
+            const stream = await mediaDevices.getUserMedia({ audio: true })
+            cloudStreamRef.current = stream
+            activeRef.current = true
+            startWavRecorder(stream)
+            startVisualPulse()
+            startMeter(stream, false)
+            setListening(true)
+          } catch (error) {
+            activeRef.current = false
+            finishWavRecorder(false)
+            stopCloudStream()
+            stopMeter()
+            stopVisualPulse()
+            setListening(false)
+            setCloudError(error && error.message ? error.message : '无法开始火山引擎录音')
+          }
+        }
+
+        async function stopVolcengineRecording() {
+          activeRef.current = false
+          stopMeter()
+          stopVisualPulse()
+          setListening(false)
+          try {
+            const audioBase64 = finishWavRecorder(true)
+            stopCloudStream()
+            if (!audioBase64) throw new Error('没有录到可转写的音频')
+            setCloudBusy(true)
+            await transcribeVolcengineAudio(audioBase64)
+          } catch (error) {
+            setCloudError(error && error.message ? error.message : '火山引擎转写失败')
+          } finally {
+            stopCloudStream()
+            setCloudBusy(false)
+          }
+        }
+
         async function startCloudRecording() {
+          if (engine === 'volcengine') {
+            await startVolcengineRecording()
+            return
+          }
           const g = getGlobal()
           const mediaDevices = g && g.navigator && g.navigator.mediaDevices
           const MediaRecorderCtor = g && g.MediaRecorder
@@ -341,6 +545,10 @@ return {
         }
 
         function stopCloudRecording() {
+          if (engine === 'volcengine') {
+            stopVolcengineRecording()
+            return
+          }
           activeRef.current = false
           stopMeter()
           stopVisualPulse()
@@ -468,7 +676,7 @@ return {
         }
 
         function toggle() {
-          if (engine === 'siliconflow') {
+          if (engine === 'siliconflow' || engine === 'volcengine') {
             if (listening) stopCloudRecording()
             else startCloudRecording()
             return
@@ -497,12 +705,28 @@ return {
             if (g && g.localStorage) {
               g.localStorage.setItem('dsh-voice-engine', engine)
               g.localStorage.setItem('dsh-voice-cloud-model', cloudModel)
+              g.localStorage.setItem('dsh-voice-volc-auth-mode', volcAuthMode)
             }
             if (g && g.sessionStorage) {
               if (cloudApiKey.trim()) {
                 g.sessionStorage.setItem('dsh-voice-siliconflow-key', cloudApiKey.trim())
               } else {
                 g.sessionStorage.removeItem('dsh-voice-siliconflow-key')
+              }
+              if (volcApiKey.trim()) {
+                g.sessionStorage.setItem('dsh-voice-volc-api-key', volcApiKey.trim())
+              } else {
+                g.sessionStorage.removeItem('dsh-voice-volc-api-key')
+              }
+              if (volcAppId.trim()) {
+                g.sessionStorage.setItem('dsh-voice-volc-app-id', volcAppId.trim())
+              } else {
+                g.sessionStorage.removeItem('dsh-voice-volc-app-id')
+              }
+              if (volcAccessToken.trim()) {
+                g.sessionStorage.setItem('dsh-voice-volc-access-token', volcAccessToken.trim())
+              } else {
+                g.sessionStorage.removeItem('dsh-voice-volc-access-token')
               }
             }
           } catch (error) {
@@ -520,9 +744,13 @@ return {
             if (g && g.localStorage) {
               setEngine(g.localStorage.getItem('dsh-voice-engine') || 'browser')
               setCloudModel(g.localStorage.getItem('dsh-voice-cloud-model') || 'FunAudioLLM/SenseVoiceSmall')
+              setVolcAuthMode(g.localStorage.getItem('dsh-voice-volc-auth-mode') || 'api-key')
             }
             if (g && g.sessionStorage) {
               setCloudApiKey(g.sessionStorage.getItem('dsh-voice-siliconflow-key') || '')
+              setVolcApiKey(g.sessionStorage.getItem('dsh-voice-volc-api-key') || '')
+              setVolcAppId(g.sessionStorage.getItem('dsh-voice-volc-app-id') || '')
+              setVolcAccessToken(g.sessionStorage.getItem('dsh-voice-volc-access-token') || '')
             }
           } catch (error) {
             // Keep the current in-memory values if browser storage is unavailable.
@@ -542,6 +770,7 @@ return {
             recorder.onstop = null
             recorder.stop()
           }
+          finishWavRecorder(false)
           stopCloudStream()
           if (recRef.current && typeof recRef.current.abort === 'function') {
             recRef.current.abort()
@@ -635,7 +864,7 @@ return {
                 {
                   style: {
                     display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
+                    gridTemplateColumns: 'repeat(3, 1fr)',
                     gap: 4,
                     padding: 4,
                     marginBottom: 16,
@@ -645,7 +874,8 @@ return {
                 },
                 ...[
                   ['browser', '浏览器实时'],
-                  ['siliconflow', '云端高准确率'],
+                  ['siliconflow', '硅基流动'],
+                  ['volcengine', '火山 ASR'],
                 ].map(([value, label]) => React.createElement(
                   'button',
                   {
@@ -726,11 +956,130 @@ return {
                     'Key 只保存在当前浏览器标签页。建议使用单独创建并设置额度的 Key。',
                   ),
                 )
-                : React.createElement(
-                  'div',
-                  { style: { fontSize: 12, lineHeight: 1.6, color: '#6b7280' } },
-                  '实时显示识别文本，可在说话时直接编辑。',
-                ),
+                : engine === 'volcengine'
+                  ? React.createElement(
+                    React.Fragment,
+                    null,
+                    React.createElement(
+                      'label',
+                      { style: { display: 'block', marginBottom: 12, fontSize: 12, color: '#5f6670' } },
+                      '识别服务',
+                      React.createElement(
+                        'div',
+                        {
+                          style: {
+                            display: 'flex',
+                            alignItems: 'center',
+                            height: 36,
+                            marginTop: 6,
+                            padding: '0 10px',
+                            border: '1px solid #d7dbe0',
+                            borderRadius: 6,
+                            background: '#f9fafb',
+                            color: '#20242a',
+                            fontSize: 13,
+                          },
+                        },
+                        '录音文件极速版（volc.bigasr.auc_turbo）',
+                      ),
+                    ),
+                    React.createElement(
+                      'div',
+                      {
+                        style: {
+                          display: 'grid',
+                          gridTemplateColumns: '1fr 1fr',
+                          gap: 4,
+                          padding: 4,
+                          marginBottom: 12,
+                          borderRadius: 7,
+                          background: '#f3f4f6',
+                        },
+                      },
+                      ...[
+                        ['api-key', '新版 API Key'],
+                        ['legacy', '旧版 App + Token'],
+                      ].map(([value, label]) => React.createElement(
+                        'button',
+                        {
+                          key: value,
+                          type: 'button',
+                          onClick: () => setVolcAuthMode(value),
+                          style: {
+                            height: 30,
+                            border: value === volcAuthMode ? '1px solid #d1d5db' : '1px solid transparent',
+                            borderRadius: 5,
+                            background: value === volcAuthMode ? '#ffffff' : 'transparent',
+                            color: value === volcAuthMode ? '#20242a' : '#6b7280',
+                            cursor: 'pointer',
+                            fontSize: 12,
+                            fontWeight: value === volcAuthMode ? 600 : 500,
+                          },
+                        },
+                        label,
+                      )),
+                    ),
+                    volcAuthMode === 'api-key'
+                      ? React.createElement(
+                        'label',
+                        { style: { display: 'block', marginBottom: 8, fontSize: 12, color: '#5f6670' } },
+                        '火山引擎 API Key',
+                        React.createElement('input', {
+                          type: 'password',
+                          value: volcApiKey,
+                          autoComplete: 'off',
+                          placeholder: '在火山引擎控制台复制 API Key',
+                          onChange: (event) => setVolcApiKey(event.target.value),
+                          style: {
+                            boxSizing: 'border-box', display: 'block', width: '100%', height: 36,
+                            marginTop: 6, padding: '0 10px', border: '1px solid #d7dbe0',
+                            borderRadius: 6, color: '#20242a', fontSize: 13,
+                          },
+                        }),
+                      )
+                      : React.createElement(
+                        React.Fragment,
+                        null,
+                        React.createElement(
+                          'label',
+                          { style: { display: 'block', marginBottom: 10, fontSize: 12, color: '#5f6670' } },
+                          'App ID',
+                          React.createElement('input', {
+                            type: 'text', value: volcAppId, autoComplete: 'off',
+                            onChange: (event) => setVolcAppId(event.target.value),
+                            style: {
+                              boxSizing: 'border-box', display: 'block', width: '100%', height: 36,
+                              marginTop: 6, padding: '0 10px', border: '1px solid #d7dbe0',
+                              borderRadius: 6, color: '#20242a', fontSize: 13,
+                            },
+                          }),
+                        ),
+                        React.createElement(
+                          'label',
+                          { style: { display: 'block', marginBottom: 8, fontSize: 12, color: '#5f6670' } },
+                          'Access Token',
+                          React.createElement('input', {
+                            type: 'password', value: volcAccessToken, autoComplete: 'off',
+                            onChange: (event) => setVolcAccessToken(event.target.value),
+                            style: {
+                              boxSizing: 'border-box', display: 'block', width: '100%', height: 36,
+                              marginTop: 6, padding: '0 10px', border: '1px solid #d7dbe0',
+                              borderRadius: 6, color: '#20242a', fontSize: 13,
+                            },
+                          }),
+                        ),
+                      ),
+                    React.createElement(
+                      'div',
+                      { style: { fontSize: 11, lineHeight: 1.5, color: '#7b818a' } },
+                      '凭证仅保存在当前标签页，并经本机 DSH Host 代理发送；插件不会写入磁盘。',
+                    ),
+                  )
+                  : React.createElement(
+                    'div',
+                    { style: { fontSize: 12, lineHeight: 1.6, color: '#6b7280' } },
+                    '实时显示识别文本，可在说话时直接编辑。',
+                  ),
               cloudError
                 ? React.createElement(
                   'div',
@@ -797,13 +1146,13 @@ return {
               title: listening
                 ? `停止语音输入（${lang === 'zh-CN' ? '中文' : 'English'}）`
                 : cloudBusy
-                  ? '云端转写中'
+                  ? engine === 'volcengine' ? '火山 ASR 转写中' : '云端转写中'
                 : unsupported
-                  ? engine === 'siliconflow'
-                    ? '当前浏览器不支持录音（需 MediaRecorder）'
+                  ? engine === 'siliconflow' || engine === 'volcengine'
+                    ? '当前浏览器不支持录音（需 Chrome / Edge）'
                     : '当前浏览器不支持语音识别（需 Chrome / Edge）'
-                  : engine === 'siliconflow'
-                    ? '云端高准确率语音输入'
+                  : engine === 'siliconflow' || engine === 'volcengine'
+                    ? engine === 'volcengine' ? '火山引擎高准确率语音输入' : '云端高准确率语音输入'
                     : `语音输入（${lang === 'zh-CN' ? '中文' : 'English'}）`,
               onClick: toggle,
               'aria-label': listening ? '停止语音输入' : '开始语音输入',
@@ -908,7 +1257,9 @@ return {
                 padding: 0,
                 border: '1px solid transparent',
                 borderRadius: 6,
-                background: engine === 'siliconflow' ? 'rgba(82, 88, 99, 0.1)' : 'transparent',
+                background: engine === 'siliconflow' || engine === 'volcengine'
+                  ? 'rgba(82, 88, 99, 0.1)'
+                  : 'transparent',
                 color: cloudError ? '#dc2626' : '#858b93',
                 cursor: listening || cloudBusy ? 'not-allowed' : 'pointer',
                 opacity: listening || cloudBusy ? 0.5 : 1,

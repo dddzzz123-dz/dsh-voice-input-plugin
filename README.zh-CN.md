@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-这是一个用于 DeepSeek Harness（DSH）Web UI 的客户端 Cordis 插件。它会在对话输入框旁边增加语音输入按钮，让你可以连续语音转文字，并把识别结果写入当前输入草稿。
+这是一个用于 DeepSeek Harness（DSH）Web UI 的 Cordis 插件。它会在对话输入框旁边增加语音输入按钮，支持浏览器实时识别和可选的云端高准确率 ASR，并把结果写入当前输入草稿。
 
 ## 功能
 
@@ -14,7 +14,8 @@
 - 使用五段式动态音量条显示当前收音状态。
 - 使用接近 DSH 界面风格的内联 SVG 麦克风和停止图标，不使用 emoji。
 - 可选接入 SiliconFlow 高准确率云端语音转写。
-- 纯客户端实现，不需要插件后端服务。
+- 可选接入火山引擎大模型录音文件极速版，启用标点、ITN 和语义顺滑。
+- 火山模式通过 DSH Host 私有 RPC 和本地代理调用，绕过浏览器 CORS 限制，凭证不会出现在命令行或源码中。
 
 ## 环境要求
 
@@ -27,8 +28,9 @@
 
 Firefox 和 Safari 目前不支持本插件使用的 Web Speech 语音识别能力。
 
-可选的云端高准确率模式还需要浏览器支持 `MediaRecorder`，并会调用
-SiliconFlow 的 `/v1/audio/transcriptions` 接口。
+SiliconFlow 模式还需要浏览器支持 `MediaRecorder`，并会调用其
+`/v1/audio/transcriptions` 接口。火山模式通过 `AudioContext` 编码 16 kHz
+单声道 PCM WAV，并要求 DSH Host 提供 `shell` 服务和本地 Node.js。
 
 ## 在 DSH 中安装
 
@@ -40,13 +42,14 @@ SiliconFlow 的 `/v1/audio/transcriptions` 接口。
    cordis_inspect: what = client, name = conversation.input.right
    ```
 
-2. 定义插件，把 `code.client` 设置为 `code.client.js` 的完整内容：
+2. 定义插件，同时提供 Host 和 Client 两份代码：
 
    ```text
    cordis_define:
      name: voice-input
      purpose: Add continuous voice dictation to the DSH composer.
      code:
+       host: <完整 code.host.js 内容>
        client: <完整 code.client.js 内容>
    ```
 
@@ -63,13 +66,15 @@ SiliconFlow 的 `/v1/audio/transcriptions` 接口。
 - 点击麦克风按钮开始收音。
 - 再次点击按钮停止收音。
 - 点击 `中` / `EN` 按钮手动切换识别语言。
-- 点击设置按钮，可在“浏览器实时”和“云端高准确率”之间切换。
+- 点击设置按钮，可在“浏览器实时”、“硅基流动”和“火山 ASR”之间切换。
 - 云端模式需要填写 SiliconFlow API Key，可选择 `FunAudioLLM/SenseVoiceSmall` 或 `TeleAI/TeleSpeechASR`。
+- 火山模式固定使用 `volc.bigasr.auc_turbo` 录音文件极速版，可填写新版控制台 API Key，或旧版 App ID + Access Token。
 - 收音时按钮会展开，并显示五段红色动态音量条。
 - 识别出的文字会写入当前输入框草稿，确认后正常发送即可。
 
-API Key 只保存在当前标签页的 `sessionStorage`，不会写进源码或 GitHub。
-由于请求仍由浏览器直接发出，建议使用单独创建且设置额度限制的 Key，不要与他人共享。
+凭证只保存在当前标签页的 `sessionStorage`，不会写进源码或 GitHub。
+火山凭证只在单次请求时通过插件包内私有 Host RPC 传递，再经子进程临时环境变量使用，
+不会写入磁盘或命令行。建议使用单独创建且设置额度限制的凭证，不要与他人共享。
 
 ## 已知限制
 
@@ -77,6 +82,7 @@ API Key 只保存在当前标签页的 `sessionStorage`，不会写进源码或 
 - 浏览器会自行决定静音超时和单段识别长度。插件会在 `end` 事件后尝试重启，但不能把单次浏览器识别会话变成真正无限。
 - 浏览器实时模式保留识别服务返回的原始文本，不再添加启发式标点。需要语义标点和更高准确率时请使用云端模式。
 - 云端模式会在停止录音后返回整段文字，不提供浏览器实时模式那样的临时文本预览。
+- 火山模式当前实现的是录音文件极速版批量识别，不是流式 WebSocket；插件内建议单段录音不超过约 8 分钟。
 - 同一 DSH 页面来源中的其他脚本理论上可以访问浏览器端 Key，因此请使用独立且有限额的 Key。
 - Chrome 可能会把语音识别请求交给 Google 服务；Edge 可能会交给 Microsoft / Azure 服务。
 - 音量条依赖 `getUserMedia`。如果浏览器拒绝麦克风音量采集，语音识别仍可能工作，但音量条会退回到 SpeechRecognition 的 sound/speech 事件反馈。
@@ -84,3 +90,7 @@ API Key 只保存在当前标签页的 `sessionStorage`，不会写进源码或 
 ## 许可证
 
 MIT
+
+## 服务文档
+
+- [火山引擎大模型录音文件极速版识别 API](https://www.volcengine.com/docs/6561/1631584?lang=zh)
