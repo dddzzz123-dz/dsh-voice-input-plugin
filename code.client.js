@@ -3,7 +3,7 @@
  *
  * 平台：Client（浏览器端）
  * 挂载点：conversation.input.right（composer 工具行右端，发送按钮左侧）
- * 依赖：浏览器 Web Speech API（SpeechRecognition / webkitSpeechRecognition）
+ * 依赖：浏览器 Web Speech API，或可选的 SiliconFlow 语音转写 API
  *
  * 部署方式：通过 Cordis 动态插件工具 cordis_define / cordis_run 运行，
  * 详见同目录 README.md。本文件即 cordis_define 的 code.client 载荷。
@@ -36,6 +36,33 @@ return {
         const [soundActive, setSoundActive] = React.useState(false)
         const [lang, setLang] = React.useState('zh-CN')
         const [autoPunctuation, setAutoPunctuation] = React.useState(true)
+        const [settingsOpen, setSettingsOpen] = React.useState(false)
+        const [engine, setEngine] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.localStorage && g.localStorage.getItem('dsh-voice-engine')) || 'browser'
+          } catch (error) {
+            return 'browser'
+          }
+        })
+        const [cloudModel, setCloudModel] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.localStorage && g.localStorage.getItem('dsh-voice-cloud-model')) || 'FunAudioLLM/SenseVoiceSmall'
+          } catch (error) {
+            return 'FunAudioLLM/SenseVoiceSmall'
+          }
+        })
+        const [cloudApiKey, setCloudApiKey] = React.useState(() => {
+          const g = getGlobal()
+          try {
+            return (g && g.sessionStorage && g.sessionStorage.getItem('dsh-voice-siliconflow-key')) || ''
+          } catch (error) {
+            return ''
+          }
+        })
+        const [cloudBusy, setCloudBusy] = React.useState(false)
+        const [cloudError, setCloudError] = React.useState('')
         const recRef = React.useRef(null)
         const langRef = React.useRef('zh-CN')
         const autoPunctuationRef = React.useRef(true)
@@ -46,11 +73,29 @@ return {
         const carriedFinalRef = React.useRef('')
         const sessionFinalRef = React.useRef('')
         const interimRef = React.useRef('')
+        const suppressedSpeechLengthRef = React.useRef(0)
+        const lastWrittenDraftRef = React.useRef(null)
         const meterRef = React.useRef(null)
         const visualRef = React.useRef(null)
+        const mediaRecorderRef = React.useRef(null)
+        const cloudChunksRef = React.useRef([])
+        const cloudStreamRef = React.useRef(null)
 
         React.useEffect(() => {
-          draftRef.current = (input && input.draft) || ''
+          const nextDraft = (input && input.draft) || ''
+          draftRef.current = nextDraft
+
+          if (!activeRef.current || engine !== 'browser') return
+          if (lastWrittenDraftRef.current !== null && nextDraft === lastWrittenDraftRef.current) {
+            lastWrittenDraftRef.current = null
+            return
+          }
+
+          // Any composer edit made while dictating becomes authoritative. Suppress all
+          // speech already seen so a later final result cannot resurrect deleted text.
+          baseDraftRef.current = nextDraft
+          suppressedSpeechLengthRef.current = getRecognizedSpeech().length
+          lastWrittenDraftRef.current = null
         }, [input && input.draft])
 
         React.useEffect(() => {
@@ -76,12 +121,18 @@ return {
           restartTimerRef.current = null
         }
 
+        function getRecognizedSpeech() {
+          return carriedFinalRef.current + sessionFinalRef.current + interimRef.current
+        }
+
         function writeTranscript() {
-          const spoken = carriedFinalRef.current + sessionFinalRef.current + interimRef.current
+          const recognized = getRecognizedSpeech()
+          const spoken = recognized.slice(Math.min(suppressedSpeechLengthRef.current, recognized.length))
           const current = baseDraftRef.current || ''
           const next = current
             ? (spoken ? current + spoken : current)
             : spoken
+          lastWrittenDraftRef.current = next
           inputActions.setDraft(next)
           draftRef.current = next
         }
@@ -109,7 +160,7 @@ return {
           if (meter.raf && g && typeof g.cancelAnimationFrame === 'function') {
             g.cancelAnimationFrame(meter.raf)
           }
-          if (meter.stream) {
+          if (meter.stream && meter.ownsStream) {
             meter.stream.getTracks().forEach((track) => track.stop())
           }
           if (meter.audioContext && typeof meter.audioContext.close === 'function') {
@@ -153,15 +204,15 @@ return {
           tick()
         }
 
-        async function startMeter() {
+        async function startMeter(existingStream, ownsStream = true) {
           const g = getGlobal()
           const mediaDevices = g && g.navigator && g.navigator.mediaDevices
           const AudioCtor = g && (g.AudioContext || g.webkitAudioContext)
           if (!mediaDevices || !AudioCtor || meterRef.current) return
           try {
-            const stream = await mediaDevices.getUserMedia({ audio: true })
+            const stream = existingStream || await mediaDevices.getUserMedia({ audio: true })
             if (!activeRef.current) {
-              stream.getTracks().forEach((track) => track.stop())
+              if (ownsStream) stream.getTracks().forEach((track) => track.stop())
               return
             }
             const audioContext = new AudioCtor()
@@ -170,7 +221,7 @@ return {
             analyser.fftSize = 256
             source.connect(analyser)
             const data = new Uint8Array(analyser.frequencyBinCount)
-            const meter = { stream, audioContext, analyser, data, raf: null }
+            const meter = { stream, ownsStream, audioContext, analyser, data, raf: null }
             meterRef.current = meter
 
             function tick() {
@@ -191,6 +242,134 @@ return {
             tick()
           } catch (error) {
             console.log('[voice-input] meter unavailable:', error && error.message ? error.message : error)
+          }
+        }
+
+        function stopCloudStream() {
+          const stream = cloudStreamRef.current
+          cloudStreamRef.current = null
+          if (stream) stream.getTracks().forEach((track) => track.stop())
+        }
+
+        function appendCloudTranscript(text) {
+          const clean = (text || '').trim()
+          if (!clean) return
+          const current = draftRef.current || ''
+          const needsSpace = current
+            && !/\s$/.test(current)
+            && langRef.current !== 'zh-CN'
+          const next = current + (needsSpace ? ' ' : '') + clean
+          inputActions.setDraft(next)
+          draftRef.current = next
+        }
+
+        async function transcribeCloudAudio(blob) {
+          if (!blob || blob.size === 0) throw new Error('没有录到可转写的音频')
+          if (!cloudApiKey.trim()) throw new Error('请先在语音设置中填写 SiliconFlow API Key')
+
+          const form = new FormData()
+          form.append('file', blob, 'dsh-voice-input.webm')
+          form.append('model', cloudModel)
+          const response = await fetch('https://api.siliconflow.cn/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${cloudApiKey.trim()}` },
+            body: form,
+          })
+          if (!response.ok) {
+            let detail = ''
+            try {
+              const body = await response.json()
+              detail = body && (body.message || body.error)
+                ? `：${body.message || body.error}`
+                : ''
+            } catch (error) {
+              detail = ''
+            }
+            throw new Error(`云端转写失败（HTTP ${response.status}）${detail}`)
+          }
+          const result = await response.json()
+          if (!result || typeof result.text !== 'string') {
+            throw new Error('云端转写没有返回文本')
+          }
+          appendCloudTranscript(result.text)
+        }
+
+        async function startCloudRecording() {
+          const g = getGlobal()
+          const mediaDevices = g && g.navigator && g.navigator.mediaDevices
+          const MediaRecorderCtor = g && g.MediaRecorder
+          if (!mediaDevices || !MediaRecorderCtor) {
+            setUnsupported(true)
+            return
+          }
+          if (!cloudApiKey.trim()) {
+            setCloudError('请先填写 SiliconFlow API Key')
+            setSettingsOpen(true)
+            return
+          }
+
+          try {
+            setCloudError('')
+            const stream = await mediaDevices.getUserMedia({ audio: true })
+            const preferredMimeType = MediaRecorderCtor.isTypeSupported
+              && MediaRecorderCtor.isTypeSupported('audio/webm;codecs=opus')
+              ? 'audio/webm;codecs=opus'
+              : ''
+            const recorder = preferredMimeType
+              ? new MediaRecorderCtor(stream, { mimeType: preferredMimeType })
+              : new MediaRecorderCtor(stream)
+            const mimeType = recorder.mimeType || preferredMimeType || 'audio/webm'
+            cloudStreamRef.current = stream
+            cloudChunksRef.current = []
+            mediaRecorderRef.current = recorder
+            recorder.ondataavailable = (event) => {
+              if (event && event.data && event.data.size > 0) cloudChunksRef.current.push(event.data)
+            }
+            recorder.onerror = (event) => {
+              const error = event && event.error
+              setCloudError(error && error.message ? error.message : '云端录音失败')
+            }
+            recorder.onstop = async () => {
+              const chunks = cloudChunksRef.current
+              cloudChunksRef.current = []
+              mediaRecorderRef.current = null
+              stopCloudStream()
+              const blob = new Blob(chunks, { type: mimeType })
+              setCloudBusy(true)
+              try {
+                await transcribeCloudAudio(blob)
+              } catch (error) {
+                setCloudError(error && error.message ? error.message : '云端转写失败')
+              } finally {
+                setCloudBusy(false)
+              }
+            }
+
+            activeRef.current = true
+            startVisualPulse()
+            startMeter(stream, false)
+            recorder.start(1000)
+            setListening(true)
+          } catch (error) {
+            activeRef.current = false
+            stopCloudStream()
+            stopMeter()
+            stopVisualPulse()
+            setListening(false)
+            setCloudError(error && error.message ? error.message : '无法开始云端录音')
+          }
+        }
+
+        function stopCloudRecording() {
+          activeRef.current = false
+          stopMeter()
+          stopVisualPulse()
+          setListening(false)
+          const recorder = mediaRecorderRef.current
+          if (recorder && recorder.state !== 'inactive') {
+            recorder.stop()
+          } else {
+            stopCloudStream()
           }
         }
 
@@ -271,7 +450,7 @@ return {
           return rec
         }
 
-        function toggle() {
+        function toggleBrowserRecognition() {
           const rec = ensureRecognition()
           if (!rec) {
             setUnsupported(true)
@@ -291,6 +470,8 @@ return {
               carriedFinalRef.current = ''
               sessionFinalRef.current = ''
               interimRef.current = ''
+              suppressedSpeechLengthRef.current = 0
+              lastWrittenDraftRef.current = null
               startVisualPulse()
               startMeter()
               rec.start()
@@ -304,6 +485,15 @@ return {
               setListening(false)
             }
           }
+        }
+
+        function toggle() {
+          if (engine === 'siliconflow') {
+            if (listening) stopCloudRecording()
+            else startCloudRecording()
+            return
+          }
+          toggleBrowserRecognition()
         }
 
         function switchLanguage() {
@@ -325,12 +515,58 @@ return {
           setAutoPunctuation((current) => !current)
         }
 
+        function saveSettings() {
+          const g = getGlobal()
+          try {
+            if (g && g.localStorage) {
+              g.localStorage.setItem('dsh-voice-engine', engine)
+              g.localStorage.setItem('dsh-voice-cloud-model', cloudModel)
+            }
+            if (g && g.sessionStorage) {
+              if (cloudApiKey.trim()) {
+                g.sessionStorage.setItem('dsh-voice-siliconflow-key', cloudApiKey.trim())
+              } else {
+                g.sessionStorage.removeItem('dsh-voice-siliconflow-key')
+              }
+            }
+          } catch (error) {
+            setCloudError('浏览器拒绝保存语音设置')
+            return
+          }
+          setCloudError('')
+          setUnsupported(false)
+          setSettingsOpen(false)
+        }
+
+        function cancelSettings() {
+          const g = getGlobal()
+          try {
+            if (g && g.localStorage) {
+              setEngine(g.localStorage.getItem('dsh-voice-engine') || 'browser')
+              setCloudModel(g.localStorage.getItem('dsh-voice-cloud-model') || 'FunAudioLLM/SenseVoiceSmall')
+            }
+            if (g && g.sessionStorage) {
+              setCloudApiKey(g.sessionStorage.getItem('dsh-voice-siliconflow-key') || '')
+            }
+          } catch (error) {
+            // Keep the current in-memory values if browser storage is unavailable.
+          }
+          setCloudError('')
+          setSettingsOpen(false)
+        }
+
         // 插件卸载时中止进行中的识别
         React.useEffect(() => () => {
           activeRef.current = false
           clearRestartTimer()
           stopMeter()
           stopVisualPulse()
+          const recorder = mediaRecorderRef.current
+          if (recorder && recorder.state !== 'inactive') {
+            recorder.onstop = null
+            recorder.stop()
+          }
+          stopCloudStream()
           if (recRef.current && typeof recRef.current.abort === 'function') {
             recRef.current.abort()
           }
@@ -368,9 +604,207 @@ return {
           iconProps,
           React.createElement('rect', { x: 7, y: 7, width: 10, height: 10, rx: 1.5 }),
         )
+        const settingsIcon = React.createElement(
+          'svg',
+          iconProps,
+          React.createElement('circle', { cx: 12, cy: 12, r: 3 }),
+          React.createElement('path', { d: 'M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z' }),
+        )
         const langLabel = lang === 'zh-CN' ? '中' : 'EN'
         const nextLangLabel = lang === 'zh-CN' ? 'English' : '中文'
         const punctuationLabel = lang === 'zh-CN' ? '。' : '.'
+
+        const settingsPanel = settingsOpen
+          ? React.createElement(
+            'div',
+            {
+              role: 'presentation',
+              onMouseDown: (event) => {
+                if (event.target === event.currentTarget) cancelSettings()
+              },
+              style: {
+                position: 'fixed',
+                inset: 0,
+                zIndex: 10000,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 20,
+                background: 'rgba(17, 24, 39, 0.28)',
+              },
+            },
+            React.createElement(
+              'div',
+              {
+                role: 'dialog',
+                'aria-modal': 'true',
+                'aria-label': '语音输入设置',
+                style: {
+                  width: 'min(380px, calc(100vw - 32px))',
+                  padding: 18,
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 8,
+                  background: '#ffffff',
+                  color: '#20242a',
+                  boxShadow: '0 18px 50px rgba(17, 24, 39, 0.18)',
+                  fontFamily: 'inherit',
+                },
+              },
+              React.createElement(
+                'div',
+                { style: { marginBottom: 14, fontSize: 16, fontWeight: 650 } },
+                '语音输入设置',
+              ),
+              React.createElement(
+                'div',
+                {
+                  style: {
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: 4,
+                    padding: 4,
+                    marginBottom: 16,
+                    borderRadius: 7,
+                    background: '#f3f4f6',
+                  },
+                },
+                ...[
+                  ['browser', '浏览器实时'],
+                  ['siliconflow', '云端高准确率'],
+                ].map(([value, label]) => React.createElement(
+                  'button',
+                  {
+                    key: value,
+                    type: 'button',
+                    onClick: () => setEngine(value),
+                    style: {
+                      height: 32,
+                      border: value === engine ? '1px solid #d1d5db' : '1px solid transparent',
+                      borderRadius: 5,
+                      background: value === engine ? '#ffffff' : 'transparent',
+                      color: value === engine ? '#20242a' : '#6b7280',
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      fontWeight: value === engine ? 600 : 500,
+                    },
+                  },
+                  label,
+                )),
+              ),
+              engine === 'siliconflow'
+                ? React.createElement(
+                  React.Fragment,
+                  null,
+                  React.createElement(
+                    'label',
+                    { style: { display: 'block', marginBottom: 12, fontSize: 12, color: '#5f6670' } },
+                    '识别模型',
+                    React.createElement(
+                      'select',
+                      {
+                        value: cloudModel,
+                        onChange: (event) => setCloudModel(event.target.value),
+                        style: {
+                          display: 'block',
+                          width: '100%',
+                          height: 36,
+                          marginTop: 6,
+                          padding: '0 10px',
+                          border: '1px solid #d7dbe0',
+                          borderRadius: 6,
+                          background: '#ffffff',
+                          color: '#20242a',
+                          fontSize: 13,
+                        },
+                      },
+                      React.createElement('option', { value: 'FunAudioLLM/SenseVoiceSmall' }, 'SenseVoiceSmall（推荐）'),
+                      React.createElement('option', { value: 'TeleAI/TeleSpeechASR' }, 'TeleSpeechASR'),
+                    ),
+                  ),
+                  React.createElement(
+                    'label',
+                    { style: { display: 'block', marginBottom: 8, fontSize: 12, color: '#5f6670' } },
+                    'SiliconFlow API Key',
+                    React.createElement('input', {
+                      type: 'password',
+                      value: cloudApiKey,
+                      autoComplete: 'off',
+                      placeholder: 'sk-...',
+                      onChange: (event) => setCloudApiKey(event.target.value),
+                      style: {
+                        boxSizing: 'border-box',
+                        display: 'block',
+                        width: '100%',
+                        height: 36,
+                        marginTop: 6,
+                        padding: '0 10px',
+                        border: '1px solid #d7dbe0',
+                        borderRadius: 6,
+                        color: '#20242a',
+                        fontSize: 13,
+                      },
+                    }),
+                  ),
+                  React.createElement(
+                    'div',
+                    { style: { fontSize: 11, lineHeight: 1.5, color: '#7b818a' } },
+                    'Key 只保存在当前浏览器标签页。建议使用单独创建并设置额度的 Key。',
+                  ),
+                )
+                : React.createElement(
+                  'div',
+                  { style: { fontSize: 12, lineHeight: 1.6, color: '#6b7280' } },
+                  '实时显示识别文本，可在说话时直接编辑。',
+                ),
+              cloudError
+                ? React.createElement(
+                  'div',
+                  { style: { marginTop: 10, fontSize: 12, lineHeight: 1.5, color: '#c24141' } },
+                  cloudError,
+                )
+                : null,
+              React.createElement(
+                'div',
+                { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 } },
+                React.createElement(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: cancelSettings,
+                    style: {
+                      height: 34,
+                      padding: '0 13px',
+                      border: '1px solid #d7dbe0',
+                      borderRadius: 6,
+                      background: '#ffffff',
+                      color: '#4b5563',
+                      cursor: 'pointer',
+                    },
+                  },
+                  '取消',
+                ),
+                React.createElement(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: saveSettings,
+                    style: {
+                      height: 34,
+                      padding: '0 14px',
+                      border: '1px solid #20242a',
+                      borderRadius: 6,
+                      background: '#20242a',
+                      color: '#ffffff',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                    },
+                  },
+                  '保存',
+                ),
+              ),
+            ),
+          )
+          : null
 
         return React.createElement(
           'span',
@@ -387,12 +821,18 @@ return {
               type: 'button',
               title: listening
                 ? `停止语音输入（${lang === 'zh-CN' ? '中文' : 'English'}）`
+                : cloudBusy
+                  ? '云端转写中'
                 : unsupported
-                  ? '当前浏览器不支持语音识别（需 Chrome / Edge）'
-                  : `语音输入（${lang === 'zh-CN' ? '中文' : 'English'}）`,
+                  ? engine === 'siliconflow'
+                    ? '当前浏览器不支持录音（需 MediaRecorder）'
+                    : '当前浏览器不支持语音识别（需 Chrome / Edge）'
+                  : engine === 'siliconflow'
+                    ? '云端高准确率语音输入'
+                    : `语音输入（${lang === 'zh-CN' ? '中文' : 'English'}）`,
               onClick: toggle,
               'aria-label': listening ? '停止语音输入' : '开始语音输入',
-              disabled: unsupported,
+              disabled: unsupported || cloudBusy,
               style: {
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -404,8 +844,8 @@ return {
                 borderRadius: listening ? 999 : 6,
                 background: listening ? 'rgba(220, 38, 38, 0.12)' : 'transparent',
                 color: listening ? '#dc2626' : '#858b93',
-                cursor: unsupported ? 'not-allowed' : 'pointer',
-                opacity: unsupported ? 0.5 : 1,
+                cursor: unsupported || cloudBusy ? 'not-allowed' : 'pointer',
+                opacity: unsupported || cloudBusy ? 0.5 : 1,
                 lineHeight: 1,
                 gap: 6,
                 transition: 'width 120ms ease, background 120ms ease, border-radius 120ms ease, color 120ms ease',
@@ -455,6 +895,7 @@ return {
               title: `切换到${nextLangLabel}`,
               onClick: switchLanguage,
               'aria-label': `切换到${nextLangLabel}`,
+              disabled: listening || cloudBusy,
               style: {
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -466,7 +907,8 @@ return {
                 borderRadius: 6,
                 background: 'transparent',
                 color: '#858b93',
-                cursor: 'pointer',
+                cursor: listening || cloudBusy ? 'not-allowed' : 'pointer',
+                opacity: listening || cloudBusy ? 0.5 : 1,
                 fontSize: 11,
                 fontWeight: 600,
                 lineHeight: 1,
@@ -481,6 +923,7 @@ return {
               title: autoPunctuation ? '关闭自动标点' : '开启自动标点',
               onClick: togglePunctuation,
               'aria-label': autoPunctuation ? '关闭自动标点' : '开启自动标点',
+              disabled: engine === 'siliconflow' || listening || cloudBusy,
               style: {
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -492,7 +935,8 @@ return {
                 borderRadius: 6,
                 background: autoPunctuation ? 'rgba(82, 88, 99, 0.1)' : 'transparent',
                 color: autoPunctuation ? '#4b5563' : '#858b93',
-                cursor: 'pointer',
+                cursor: engine === 'siliconflow' || listening || cloudBusy ? 'not-allowed' : 'pointer',
+                opacity: engine === 'siliconflow' || listening || cloudBusy ? 0.5 : 1,
                 fontSize: 15,
                 fontWeight: 700,
                 lineHeight: 1,
@@ -500,6 +944,39 @@ return {
             },
             punctuationLabel,
           ),
+          React.createElement(
+            'button',
+            {
+              type: 'button',
+              title: cloudError ? `语音设置：${cloudError}` : '语音设置',
+              onClick: () => setSettingsOpen(true),
+              'aria-label': '语音设置',
+              disabled: listening || cloudBusy,
+              style: {
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 28,
+                height: 28,
+                padding: 0,
+                border: '1px solid transparent',
+                borderRadius: 6,
+                background: engine === 'siliconflow' ? 'rgba(82, 88, 99, 0.1)' : 'transparent',
+                color: cloudError ? '#dc2626' : '#858b93',
+                cursor: listening || cloudBusy ? 'not-allowed' : 'pointer',
+                opacity: listening || cloudBusy ? 0.5 : 1,
+              },
+            },
+            settingsIcon,
+          ),
+          cloudBusy
+            ? React.createElement(
+              'span',
+              { style: { fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' } },
+              '转写中',
+            )
+            : null,
+          settingsPanel,
         )
       },
     ))
