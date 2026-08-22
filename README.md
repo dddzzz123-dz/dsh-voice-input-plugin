@@ -35,6 +35,44 @@ to call the official flash recognition endpoint.
 
 ## Install In DSH
 
+### Persistent Web Profile (recommended)
+
+The current production layout is split into a Host plugin and a browser client
+package:
+
+```text
+host.mjs                  Host route and Volcengine proxy
+pkg/package.json          Local DSH client package manifest
+pkg/lib/client.js         Composer UI
+pkg/lib/index.js          Package entry
+```
+
+1. Copy this repository to a stable path.
+2. Copy `pkg/` to the Web profile package location:
+
+   ```text
+   <DSH_HOME>/profiles/web/node_modules/@local/dsh-voice-input
+   ```
+
+3. Add both halves to `<DSH_HOME>/profiles/web/cordis.patch.yml`:
+
+   ```yaml
+   - insert:
+       - id: voice-input-host
+         name: 'file:///absolute/path/to/dsh-voice-input-plugin/host.mjs'
+       - id: voice-input-client
+         name: '@local/dsh-voice-input'
+   ```
+
+4. Restart DSH Web and refresh the browser page.
+
+On Windows, DSH's ACL sandbox requires `TEMP` and `TMP` to point outside the
+workspace before DSH starts. For example, use `D:\DSHTemp`, not a `.tmp`
+directory inside the active workspace. Otherwise cloud transcription can fail
+before the proxy process starts.
+
+### Creator Mode (temporary / legacy)
+
 Open a DSH creator-mode session, then:
 
 1. Inspect the target slot:
@@ -60,7 +98,9 @@ Open a DSH creator-mode session, then:
    cordis_run: <returned plugin/package id>
    ```
 
-The client plugin is delivered to open DSH Web UI pages. Refresh the Web UI if the button does not appear immediately.
+The creator-mode plugin is delivered to open DSH Web UI pages but is not the
+recommended persistent deployment. Refresh the Web UI if the button does not
+appear immediately.
 
 ## Usage
 

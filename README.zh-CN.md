@@ -34,6 +34,42 @@ SiliconFlow 模式还需要浏览器支持 `MediaRecorder`，并会调用其
 
 ## 在 DSH 中安装
 
+### Web Profile 持久安装（推荐）
+
+当前实际使用的版本分成 Host 插件和浏览器 Client 包：
+
+```text
+host.mjs                  Host 路由与火山引擎代理
+pkg/package.json          DSH 本地 Client 包清单
+pkg/lib/client.js         输入框界面
+pkg/lib/index.js          包入口
+```
+
+1. 把本仓库放在一个不会变动的目录。
+2. 把 `pkg/` 复制到 Web Profile 的包目录：
+
+   ```text
+   <DSH_HOME>/profiles/web/node_modules/@local/dsh-voice-input
+   ```
+
+3. 在 `<DSH_HOME>/profiles/web/cordis.patch.yml` 中加入 Host 和 Client：
+
+   ```yaml
+   - insert:
+       - id: voice-input-host
+         name: 'file:///语音插件绝对路径/host.mjs'
+       - id: voice-input-client
+         name: '@local/dsh-voice-input'
+   ```
+
+4. 重启 DSH Web，再刷新浏览器页面。
+
+Windows 上，DSH 的 ACL 沙箱要求启动时的 `TEMP`、`TMP` 位于工作区之外。
+例如可以使用 `D:\DSHTemp`，不要使用工作区内部的 `.tmp`。否则云端转写
+会在代理进程启动之前失败。
+
+### 创造模式临时安装（旧方式）
+
 打开一个 DSH 创造模式会话，然后执行：
 
 1. 检查输入框右侧插槽：
@@ -59,7 +95,8 @@ SiliconFlow 模式还需要浏览器支持 `MediaRecorder`，并会调用其
    cordis_run: <返回的 plugin/package id>
    ```
 
-插件会下发到已打开的 DSH Web UI 页面。如果按钮没有立刻出现，可以刷新 Web UI。
+创造模式插件会下发到已打开的 DSH Web UI 页面，但不建议作为长期持久部署。
+如果按钮没有立刻出现，可以刷新 Web UI。
 
 ## 使用方法
 
